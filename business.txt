@@ -1,0 +1,5 @@
+This business is a beauty salon.
+Services: hair coloring, balayage, highlights, keratin treatment.
+Hours: Monday to Saturday, 10am to 7pm.
+Location: Burnaby, BC.
+Phone: 604-123-4567.
