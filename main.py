@@ -9,7 +9,9 @@ from google import genai
 
 from typing import List, Dict
 
-load_dotenv()
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
@@ -36,9 +38,14 @@ class ChatRequest(BaseModel):
     session_id: str
     text: str
 
+
+
 def load_business_context() -> str:
-    with open("business.txt", "r", encoding="utf-8") as f:
-        return f.read()
+    path = BASE_DIR / "business.txt"
+    if not path.exists():
+        return "Business info is not available."
+    return path.read_text(encoding="utf-8")
+
 
 @app.post("/chat")
 def chat(body: ChatRequest):
@@ -53,11 +60,14 @@ def chat(body: ChatRequest):
     # business rule
     context = load_business_context()
     system_instruction = (
-        "You are a helpful assistant for this business. "
-        "Use ONLY the information provided. "
-        "If the answer is not in the info, say you don’t know and suggest how to get the info.\n\n"
-        f"BUSINESS INFO:\n{context}"
+        "You are a professional assistant for this business.\n"
+        "Answer clearly and helpfully using ONLY the information provided.\n"
+        "If information is missing, say you don’t know and suggest contacting the business.\n"
+        "If the user asks about booking, prices, or availability and the information is not provided, "
+        "politely direct them to contact the business.\n\n"
+        f"BUSINESS INFO:\n{context}\n"
     )
+
 
     # build prompt from histpry
     convo_text = "\n".join(
@@ -67,14 +77,15 @@ def chat(body: ChatRequest):
     prompt = f"{system_instruction}\n\nCONVERSATION:\n{convo_text}\n\nASSISTANT:"
 
     # call gemini
-    response = client.models.generate_content(
+    try:
+        response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt,
     )
+        reply = (response.text or "").strip()
+    except Exception:
+        reply = "AI service error. Please try again."
 
-    reply = (response.text or "").strip()
-    if not reply:
-        reply = "I couldn't generate a response. Please try again later."
 
 
     # messages = [system_msg] + history
