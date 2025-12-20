@@ -13,6 +13,9 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
+load_dotenv()
+
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("Missing key")
@@ -37,6 +40,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     session_id: str
     text: str
+    name: str | None = None
 
 
 
@@ -60,13 +64,20 @@ def chat(body: ChatRequest):
     # business rule
     context = load_business_context()
     system_instruction = (
-        "You are a professional assistant for this business.\n"
-        "Answer clearly and helpfully using ONLY the information provided.\n"
-        "If information is missing, say you don’t know and suggest contacting the business.\n"
-        "If the user asks about booking, prices, or availability and the information is not provided, "
-        "politely direct them to contact the business.\n\n"
+        "You are a professional front-desk assistant for Beauty Shohre Studio.\n"
+        "Speak naturally and briefly (2–4 sentences max).\n"
+        "Do NOT greet the user repeatedly.\n"
+        "Address the user by their name when appropriate.\n"
+        "Be friendly, confident, and non-repetitive.\n"
+        "Use ONLY the information provided.\n\n"
+        "BOOKING RULES:\n"
+        "- To book a consultation, clients must call or text Shohre at 778-513-9006.\n"
+        "- Online booking is available at https://beautyshohrestudio.ca/booking\n"
+        "- Do not guess prices or availability.\n\n"
         f"BUSINESS INFO:\n{context}\n"
     )
+
+
 
 
     # build prompt from histpry
@@ -74,7 +85,12 @@ def chat(body: ChatRequest):
         # keep it short
         [f"{m['role'].upper()}: {m['content']}" for m in history[-12:]] 
     )
-    prompt = f"{system_instruction}\n\nCONVERSATION:\n{convo_text}\n\nASSISTANT:"
+    user_name = body.name or "the client"
+    prompt = (
+        f"{system_instruction}\n\n"
+        f"User name: {user_name}\n\n"
+        f"CONVERSATION:\n{convo_text}\n\nASSISTANT:"
+    )
 
     # call gemini
     try:
