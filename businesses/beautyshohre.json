@@ -1,0 +1,15 @@
+{
+  "id": "beautyshohre",
+  "displayName": "Beauty Shohre Studio",
+  "assistantName": "Shohre",
+  "theme": {
+    "accent": "#EAB6C6",
+    "accentSoft": "#F8D7E2"
+  },
+  "links": {
+    "booking": "https://beautyshohrestudio.ca/booking",
+    "instagram": "https://www.instagram.com/beautyshohre_studio"
+  },
+  "phone": "778-513-9006",
+  "contextFile": "beautyshohre.txt"
+}
