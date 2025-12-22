@@ -181,3 +181,6 @@ def history(
     )
 
     return {"messages": [{"role": m.role, "text": m.content} for m in msgs]}
+@app.get("/version")
+def version():
+    return {"version": "v-2025-12-21-02"}
