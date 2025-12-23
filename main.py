@@ -3,37 +3,36 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 from pathlib import Path
+import json
+import asyncio
+from dotenv import load_dotenv
 from google import genai
 from sqlalchemy.orm import Session
 
 from db import engine, get_db
 from models import Base, ChatMessage, ChatSession
-from dotenv import load_dotenv
-import asyncio
 
+# Setup
 BASE_DIR = Path(__file__).resolve().parent
+BUSINESS_DIR = BASE_DIR / "businesses"
+BUSINESS_DIR.mkdir(exist_ok=True)
+
 load_dotenv(BASE_DIR / ".env")
 
-# ---------- Setup ----------
-BASE_DIR = Path(__file__).resolve().parent
 Base.metadata.create_all(bind=engine)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    raise RuntimeError("Missing key")
+    raise RuntimeError("Missing GEMINI_API_KEY")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-BUSINESS_CONTEXT_CACHE = {}
-SYSTEM_PROMPT_CACHE = {}
-
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://client-sand-kappa.vercel.app",  # ✅ no trailing slash
+        "https://client-sand-kappa.vercel.app",
         "https://beautyshohrestudio.ca",
         "https://www.beautyshohrestudio.ca",
     ],
@@ -42,154 +41,150 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Models ----------
+# Models
 class ChatRequest(BaseModel):
     session_id: str
     text: str
-    biz_id: str
+    biz_id: str = "default"
     name: str | None = None
 
-# ---------- Helpers ----------
-def sanitize_biz_id(biz_id: str) -> str:
-    return "".join(c for c in (biz_id or "") if c.isalnum() or c in ("-", "_")).lower() or "default"
+# Helpers (minimal)
+def clean_biz_id(biz_id: str) -> str:
+    biz_id = (biz_id or "").strip().lower()
+    biz_id = "".join(c for c in biz_id if c.isalnum() or c in ("-", "_"))
+    return biz_id or "default"
+
+def business_txt_path(biz_id: str) -> Path:
+    p = BUSINESS_DIR / f"{biz_id}.txt"
+    return p if p.exists() else (BUSINESS_DIR / "default.txt")
+
+def business_json_path(biz_id: str) -> Path:
+    p = BUSINESS_DIR / f"{biz_id}.json"
+    return p if p.exists() else (BUSINESS_DIR / "default.json")
 
 def load_business_context(biz_id: str) -> str:
-    safe = sanitize_biz_id(biz_id)
-    folder = BASE_DIR / "businesses"
-    folder.mkdir(exist_ok=True)
-
-    path = folder / f"{safe}.txt"
-    if not path.exists():
-        path = folder / "default.txt"
-
-    if not path.exists():
+    p = business_txt_path(biz_id)
+    if not p.exists():
         return "Business info is not available."
-    return path.read_text(encoding="utf-8")
+    return p.read_text(encoding="utf-8")
 
+def load_business_meta(biz_id: str) -> dict:
+    """
+    UI metadata for the frontend. Purely data-driven.
+    Expected JSON keys:
+      - businessName (string)
+      - assistantName (string)
+      - phone (string)
+      - links (object: {key: url})
+    """
+    p = business_json_path(biz_id)
+    if not p.exists():
+        return {"businessName": "This Business", "assistantName": "Dew", "phone": "", "links": {}}
 
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        meta = {}
 
-def get_system_prompt(biz_id: str, context: str) -> str:
-    if biz_id in SYSTEM_PROMPT_CACHE:
-        return SYSTEM_PROMPT_CACHE[biz_id]
+    if not isinstance(meta, dict):
+        meta = {}
 
-    prompt = (
-        "You are a professional front-desk assistant for the business described below.\n"
-        "Speak naturally and briefly (2–4 sentences max).\n"
-        "Do NOT greet the user repeatedly.\n"
-        "Address the user by their name when appropriate.\n"
-        "Be friendly, confident, and non-repetitive.\n"
-        "Use ONLY the information provided.\n"
-        "If you don't know, say so and suggest contacting the business.\n\n"
-        "IMPORTANT:\n"
-        "- Do not guess prices, availability, or policies not listed.\n"
-        "- Keep answers practical and action-oriented.\n\n"
-        f"BUSINESS INFO:\n{context}\n"
-    )
-    SYSTEM_PROMPT_CACHE[biz_id] = prompt
-    return prompt
+    links = meta.get("links")
+    if not isinstance(links, dict):
+        links = {}
 
-
-# Optional: business metadata for UI labels/links (keep minimal; not required for chat)
-@app.get("/business/{biz_id}")
-def business(biz_id: str):
-    safe = sanitize_biz_id(biz_id)
-
-    data = {
-        "beautyshohre": {
-            "businessName": "Beauty Shohre Studio",
-            "assistantName": "Shohre",
-            "phone": "778-513-9006",
-            "links": {
-                "booking": "https://beautyshohrestudio.ca/booking",
-                "gallery": "https://beautyshohrestudio.ca/gallery",
-                "instagram": "https://www.instagram.com/beautyshohre_studio",
-            },
-        },
-        "default": {
-            "businessName": "Our Business",
-            "assistantName": "Assistant",
-            "phone": "",
-            "links": {},
-        },
+    return {
+        "businessName": str(meta.get("businessName") or "This Business"),
+        "assistantName": str(meta.get("assistantName") or "Dew"),
+        "phone": str(meta.get("phone") or ""),
+        "links": links,
     }
 
-    return data.get(safe, data["default"])
+def system_prompt(context: str) -> str:
+    return (
+        "You are a professional front-desk assistant for the business described below.\n"
+        "Keep replies short and clear (2–4 sentences).\n"
+        "Do not repeat greetings.\n"
+        "Use ONLY the information provided.\n"
+        "If unsure, recommend booking online or contacting the business.\n\n"
+        "Never guess prices or exact availability.\n\n"
+        f"BUSINESS INFO:\n{context}\n"
+    )
 
-# ---------- Routes ----------
+def make_session_key(biz_id: str, session_id: str) -> str:
+    return f"{biz_id}:{session_id}"
+
+# Tiny caches
+_CONTEXT_CACHE: dict[str, str] = {}
+_PROMPT_CACHE: dict[str, str] = {}
+
+def get_context(biz_id: str) -> str:
+    if biz_id not in _CONTEXT_CACHE:
+        _CONTEXT_CACHE[biz_id] = load_business_context(biz_id)
+    return _CONTEXT_CACHE[biz_id]
+
+def get_system_prompt(biz_id: str) -> str:
+    if biz_id not in _PROMPT_CACHE:
+        _PROMPT_CACHE[biz_id] = system_prompt(get_context(biz_id))
+    return _PROMPT_CACHE[biz_id]
+
+# Routes
+@app.get("/business/{biz_id}")
+def business(biz_id: str):
+    biz_id = clean_biz_id(biz_id)
+    return load_business_meta(biz_id)
+
 @app.post("/chat")
 async def chat(body: ChatRequest, db: Session = Depends(get_db)):
-    safe_biz = sanitize_biz_id(body.biz_id)
-    effective_session_id = f"{safe_biz}:{body.session_id}"
+    biz_id = clean_biz_id(body.biz_id)
+    session_key = make_session_key(biz_id, body.session_id)
 
-    # 1) load/create session
-    s = db.get(ChatSession, effective_session_id)
+    # 1) session row
+    s = db.get(ChatSession, session_key)
     if not s:
-        s = ChatSession(id=effective_session_id, name=body.name)
+        s = ChatSession(id=session_key, name=body.name)
         db.add(s)
         db.commit()
-    else:
-        if body.name and not s.name:
-            s.name = body.name
-            db.commit()
+    elif body.name and not s.name:
+        s.name = body.name
+        db.commit()
 
-    # 2) save user message
-    db.add(ChatMessage(session_id=effective_session_id, role="user", content=body.text))
+    # 2) save user msg
+    db.add(ChatMessage(session_id=session_key, role="user", content=body.text))
     db.commit()
 
-    # 3) fetch last messages
-    last_msgs = (
+    # 3) last messages (keep small)
+    rows = (
         db.query(ChatMessage)
-        .filter(ChatMessage.session_id == effective_session_id)
+        .filter(ChatMessage.session_id == session_key)
         .order_by(ChatMessage.id.desc())
         .limit(6)
         .all()
     )[::-1]
 
-    # 4) build prompt
-    context = BUSINESS_CONTEXT_CACHE.get(safe_biz)
-    if not context:
-        context = load_business_context(safe_biz)
-        BUSINESS_CONTEXT_CACHE[safe_biz] = context
+    convo = "\n".join(f"{m.role.upper()}: {m.content}" for m in rows)
+    prompt = f"{get_system_prompt(biz_id)}\nUser name: {s.name or 'there'}\n\nCONVERSATION:\n{convo}\n\nASSISTANT:"
 
-    user_name = s.name or "there"
-    convo_text = "\n".join([f"{m.role.upper()}: {m.content}" for m in last_msgs])
-
-    system_instruction = get_system_prompt(safe_biz, context)
-
-    prompt = (
-        f"{system_instruction}\n"
-        f"User name: {user_name}\n\n"
-        f"CONVERSATION:\n{convo_text}\n\nASSISTANT:"
-    )
-
-    # 5) call gemini
+    # 4) model call
     try:
         response = await asyncio.to_thread(
             client.models.generate_content,
             model="gemini-2.5-flash",
-            contents=[prompt],  # ✅ list
+            contents=[prompt],
         )
-        reply = (response.text or "").strip()
+        reply = (response.text or "").strip() or "Sorry — please try again."
     except Exception as e:
-        print("🔥 Gemini error:", repr(e))
-        reply = "Sorry! I'm having trouble right now. Please try again in a moment."
+        print("Gemini error:", repr(e))
+        reply = "Sorry! I'm having trouble right now. Please try again."
 
-
-    if not reply:
-        reply = "Sorry! I couldn't generate a response. Please try again."
-
-    # 6) return immediately
-    response_payload = {"reply": reply}
-
-    # 7) save assistant reply AFTER
+    # 5) save assistant reply
     try:
-        db.add(ChatMessage(session_id=effective_session_id, role="assistant", content=reply))
+        db.add(ChatMessage(session_id=session_key, role="assistant", content=reply))
         db.commit()
     except Exception:
         db.rollback()
 
-    return response_payload
-
+    return {"reply": reply}
 
 @app.get("/history")
 def history(
@@ -197,17 +192,17 @@ def history(
     biz_id: str = Query("default"),
     db: Session = Depends(get_db),
 ):
-    safe_biz = sanitize_biz_id(biz_id)
-    effective_session_id = f"{safe_biz}:{session_id}"
+    biz_id = clean_biz_id(biz_id)
+    session_key = make_session_key(biz_id, session_id)
 
-    msgs = (
+    rows = (
         db.query(ChatMessage)
-        .filter(ChatMessage.session_id == effective_session_id)
+        .filter(ChatMessage.session_id == session_key)
         .order_by(ChatMessage.id.asc())
         .all()
     )
+    return {"messages": [{"role": m.role, "text": m.content} for m in rows]}
 
-    return {"messages": [{"role": m.role, "text": m.content} for m in msgs]}
 @app.get("/version")
 def version():
-    return {"version": "v-2025-12-21-02"}
+    return {"version": "v-2025-12-23"}
