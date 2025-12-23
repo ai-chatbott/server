@@ -24,6 +24,9 @@ if not GEMINI_API_KEY:
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+BUSINESS_CONTEXT_CACHE = {}
+SYSTEM_PROMPT_CACHE = {}
+
 app = FastAPI()
 
 app.add_middleware(
@@ -63,10 +66,9 @@ def load_business_context(biz_id: str) -> str:
         return "Business info is not available."
     return path.read_text(encoding="utf-8")
 
-    BUSINESS_CONTEXT_CACHE = {}
-    SYSTEM_PROMPT_CACHE = {}
 
-def get_system_prompt(biz_id, context):
+
+def get_system_prompt(biz_id: str, context: str) -> str:
     if biz_id in SYSTEM_PROMPT_CACHE:
         return SYSTEM_PROMPT_CACHE[biz_id]
 
@@ -85,6 +87,7 @@ def get_system_prompt(biz_id, context):
     )
     SYSTEM_PROMPT_CACHE[biz_id] = prompt
     return prompt
+
 
 # Optional: business metadata for UI labels/links (keep minimal; not required for chat)
 @app.get("/business/{biz_id}")
@@ -151,28 +154,13 @@ async def chat(body: ChatRequest, db: Session = Depends(get_db)):
     user_name = s.name or "there"
     convo_text = "\n".join([f"{m.role.upper()}: {m.content}" for m in last_msgs])
 
-    # ✅ Universal prompt (still structured like yours)
+    system_instruction = get_system_prompt(safe_biz, context)
 
-
-    # system_instruction = (
-    #     "You are a professional front-desk assistant for the business described below.\n"
-    #     "Speak naturally and briefly (2–4 sentences max).\n"
-    #     "Do NOT greet the user repeatedly.\n"
-    #     "Address the user by their name when appropriate.\n"
-    #     "Be friendly, confident, and non-repetitive.\n"
-    #     "Use ONLY the information provided.\n"
-    #     "If you don't know, say so and suggest contacting the business.\n\n"
-    #     "IMPORTANT:\n"
-    #     "- Do not guess prices, availability, or policies not listed.\n"
-    #     "- Keep answers practical and action-oriented.\n\n"
-    #     f"BUSINESS INFO:\n{context}\n"
-    # )
-
-    # prompt = (
-    #     f"{system_instruction}\n"
-    #     f"User name: {user_name}\n\n"
-    #     f"CONVERSATION:\n{convo_text}\n\nASSISTANT:"
-    # )
+    prompt = (
+        f"{system_instruction}\n"
+        f"User name: {user_name}\n\n"
+        f"CONVERSATION:\n{convo_text}\n\nASSISTANT:"
+    )
 
     # 5) call gemini
     try:
