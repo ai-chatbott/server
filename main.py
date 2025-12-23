@@ -165,13 +165,15 @@ async def chat(body: ChatRequest, db: Session = Depends(get_db)):
     # 5) call gemini
     try:
         response = await asyncio.to_thread(
-        client.models.generate_content,
-        model="gemini-2.5-flash",
-        contents=prompt,
-    )
+            client.models.generate_content,
+            model="gemini-2.5-flash",
+            contents=[prompt],  # ✅ list
+        )
         reply = (response.text or "").strip()
-    except Exception:
-        reply = "Sorry! Something went wrong on our side. Please try again."
+    except Exception as e:
+        print("🔥 Gemini error:", repr(e))
+        reply = "Sorry! I'm having trouble right now. Please try again in a moment."
+
 
     if not reply:
         reply = "Sorry! I couldn't generate a response. Please try again."
