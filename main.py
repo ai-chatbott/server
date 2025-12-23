@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from db import engine, get_db
 from models import Base, ChatMessage, ChatSession
 from dotenv import load_dotenv
+import asyncio
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -62,6 +63,29 @@ def load_business_context(biz_id: str) -> str:
         return "Business info is not available."
     return path.read_text(encoding="utf-8")
 
+    BUSINESS_CONTEXT_CACHE = {}
+    SYSTEM_PROMPT_CACHE = {}
+
+def get_system_prompt(biz_id, context):
+    if biz_id in SYSTEM_PROMPT_CACHE:
+        return SYSTEM_PROMPT_CACHE[biz_id]
+
+    prompt = (
+        "You are a professional front-desk assistant for the business described below.\n"
+        "Speak naturally and briefly (2–4 sentences max).\n"
+        "Do NOT greet the user repeatedly.\n"
+        "Address the user by their name when appropriate.\n"
+        "Be friendly, confident, and non-repetitive.\n"
+        "Use ONLY the information provided.\n"
+        "If you don't know, say so and suggest contacting the business.\n\n"
+        "IMPORTANT:\n"
+        "- Do not guess prices, availability, or policies not listed.\n"
+        "- Keep answers practical and action-oriented.\n\n"
+        f"BUSINESS INFO:\n{context}\n"
+    )
+    SYSTEM_PROMPT_CACHE[biz_id] = prompt
+    return prompt
+
 # Optional: business metadata for UI labels/links (keep minimal; not required for chat)
 @app.get("/business/{biz_id}")
 def business(biz_id: str):
@@ -90,7 +114,7 @@ def business(biz_id: str):
 
 # ---------- Routes ----------
 @app.post("/chat")
-def chat(body: ChatRequest, db: Session = Depends(get_db)):
+async def chat(body: ChatRequest, db: Session = Depends(get_db)):
     safe_biz = sanitize_biz_id(body.biz_id)
     effective_session_id = f"{safe_biz}:{body.session_id}"
 
@@ -114,42 +138,49 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == effective_session_id)
         .order_by(ChatMessage.id.desc())
-        .limit(12)
+        .limit(6)
         .all()
     )[::-1]
 
     # 4) build prompt
-    context = load_business_context(safe_biz)
+    context = BUSINESS_CONTEXT_CACHE.get(safe_biz)
+    if not context:
+        context = load_business_context(safe_biz)
+        BUSINESS_CONTEXT_CACHE[safe_biz] = context
+
     user_name = s.name or "there"
     convo_text = "\n".join([f"{m.role.upper()}: {m.content}" for m in last_msgs])
 
     # ✅ Universal prompt (still structured like yours)
-    system_instruction = (
-        "You are a professional front-desk assistant for the business described below.\n"
-        "Speak naturally and briefly (2–4 sentences max).\n"
-        "Do NOT greet the user repeatedly.\n"
-        "Address the user by their name when appropriate.\n"
-        "Be friendly, confident, and non-repetitive.\n"
-        "Use ONLY the information provided.\n"
-        "If you don't know, say so and suggest contacting the business.\n\n"
-        "IMPORTANT:\n"
-        "- Do not guess prices, availability, or policies not listed.\n"
-        "- Keep answers practical and action-oriented.\n\n"
-        f"BUSINESS INFO:\n{context}\n"
-    )
 
-    prompt = (
-        f"{system_instruction}\n"
-        f"User name: {user_name}\n\n"
-        f"CONVERSATION:\n{convo_text}\n\nASSISTANT:"
-    )
+
+    # system_instruction = (
+    #     "You are a professional front-desk assistant for the business described below.\n"
+    #     "Speak naturally and briefly (2–4 sentences max).\n"
+    #     "Do NOT greet the user repeatedly.\n"
+    #     "Address the user by their name when appropriate.\n"
+    #     "Be friendly, confident, and non-repetitive.\n"
+    #     "Use ONLY the information provided.\n"
+    #     "If you don't know, say so and suggest contacting the business.\n\n"
+    #     "IMPORTANT:\n"
+    #     "- Do not guess prices, availability, or policies not listed.\n"
+    #     "- Keep answers practical and action-oriented.\n\n"
+    #     f"BUSINESS INFO:\n{context}\n"
+    # )
+
+    # prompt = (
+    #     f"{system_instruction}\n"
+    #     f"User name: {user_name}\n\n"
+    #     f"CONVERSATION:\n{convo_text}\n\nASSISTANT:"
+    # )
 
     # 5) call gemini
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
+        response = await asyncio.to_thread(
+        client.models.generate_content,
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
         reply = (response.text or "").strip()
     except Exception:
         reply = "Sorry! Something went wrong on our side. Please try again."
@@ -157,12 +188,18 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)):
     if not reply:
         reply = "Sorry! I couldn't generate a response. Please try again."
 
-    # 6) save assistant reply
-    db.add(ChatMessage(session_id=effective_session_id, role="assistant", content=reply))
-    db.commit()
+    # 6) return immediately
+    response_payload = {"reply": reply}
 
-    # 7) return
-    return {"reply": reply}
+    # 7) save assistant reply AFTER
+    try:
+        db.add(ChatMessage(session_id=effective_session_id, role="assistant", content=reply))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    return response_payload
+
 
 @app.get("/history")
 def history(
