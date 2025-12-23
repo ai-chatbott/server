@@ -3,10 +3,11 @@
   "assistantName": "Dew",
   "phone": "",
   "links": {
-    "website": "https://www.beiraghian.com",
     "projects": "https://www.beiraghian.com/projects",
+    "book_call": "https://www.beiraghian.com/calendar",
     "contact": "https://www.beiraghian.com/contact",
     "github": "https://github.com/curleycoder",
+    "blog": "https://www.beiraghian.com/blog",
     "linkedin": "https://www.linkedin.com/in/shabnam-beiraghian/"
   }
 }
