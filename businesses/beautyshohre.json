@@ -6,5 +6,10 @@
     "booking": "https://beautyshohrestudio.ca/booking",
     "gallery": "https://beautyshohrestudio.ca/gallery",
     "instagram": "https://www.instagram.com/beautyshohre_studio"
+  },
+  "branding": {
+    "poweredBy": true,
+    "poweredByUrl": "https://www.beiraghian.com/dew"
+
   }
 }
